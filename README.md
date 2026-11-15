@@ -20,6 +20,15 @@
 5. Cell 14 launches the **Gradio app**. In Colab, open the `gradio.live` public URL in its output and keep the runtime connected. Select a demo account and click **Continue to dashboard** to see account cards, spending and cash-flow donut charts, recent transactions, the advisor, and the security monitor. Re-running Cell 14 closes previous Gradio servers. If no share link appears, check the cell output for a tunnel or network error. Anyone with the link can access this synthetic demo; never use real financial data.
 6. Cell 16 re-checks every headline metric from scratch, so the write-up numbers always reproduce.
 
+### Optional English voice advisor
+
+1. In **Cell 2**, set `INSTALL_VOICE_DEPENDENCIES = True` before running the notebook. This installs Transformers, PyTorch, SciPy, and SoundFile. Restart the runtime and rerun if prompted or if imports fail.
+2. Select a demo account, open **AI advisor → Voice**, and allow microphone access (or upload a clip up to 30 seconds).
+3. Press **Transcribe recording**. Review and correct the recognized question, enable **Read responses aloud**, and press **Send**. The guardrail checks the reviewed transcript just like typed questions; the answer appears in chat and as a playable audio clip.
+4. First use downloads the pretrained [Whisper tiny English](https://huggingface.co/openai/whisper-tiny.en) and [MMS English TTS](https://huggingface.co/facebook/mms-tts-eng) models. Internet and additional time/memory are needed; the under-two-minute text-only demo does not include installing or downloading voice models. Subsequent inference runs in the notebook runtime. Long answers are capped at 1,600 spoken characters; full text remains visible.
+
+Whisper is Apache-2.0; MMS English TTS is **CC-BY-NC-4.0 (non-commercial use only)**. Review both model cards and licenses before reuse. Speech recognition can mishear words, so always review the transcript. Audio travels through the Gradio/Colab runtime; with Gemini enabled, the question and selected account summary are also sent to Google. Public share links are accessible to anyone who has them, and demo account selection is not authentication. Use synthetic data only. If voice setup fails, text chat remains available.
+
 ---
 
 ## The problem
@@ -134,6 +143,7 @@ The high block rate is partly a property of the test set: **33 of 58 attacks con
 
 ## Sources
 
+- **Hugging Face speech models:** [Whisper tiny English](https://huggingface.co/openai/whisper-tiny.en) · [MMS English text-to-speech](https://huggingface.co/facebook/mms-tts-eng) · [Transformers](https://huggingface.co/docs/transformers/)
 - **Google GenAI SDK / Gemini API:** [Google AI Studio API keys](https://aistudio.google.com/app/apikey) · [google-genai Python SDK](https://googleapis.github.io/python-genai/)
 - **scikit-learn:** [LogisticRegression](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.LogisticRegression.html) · [TfidfVectorizer](https://scikit-learn.org/stable/modules/generated/sklearn.feature_extraction.text.TfidfVectorizer.html) · [train_test_split](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.train_test_split.html)
 - **pandas / NumPy:** [pandas documentation](https://pandas.pydata.org/docs/) · [NumPy documentation](https://numpy.org/doc/)

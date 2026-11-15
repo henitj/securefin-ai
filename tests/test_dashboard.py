@@ -8,7 +8,11 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
+import types
 import unittest
+
+import numpy as np
 from unittest.mock import patch
 
 import gradio as gr
@@ -85,6 +89,73 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('align-items:flex-end', css)
         self.assertIn('@media(max-width:600px)', css)
         self.assertIn('flex-direction:column', css)
+
+    def test_voice_transcription_requires_login_and_review(self):
+        transcribe = self.env['transcribe_voice']
+        captured = []
+        def recognize(audio):
+            captured.append(audio)
+            return {'text': '  How much can I save?  '}
+        with patch.dict(self.env, {'load_speech_recognizer': lambda: recognize}):
+            _, status = transcribe((8000, np.ones(8000, dtype=np.int16)), None)
+            self.assertIn('select a demo account', status)
+            self.assertFalse(captured)
+            _, status = transcribe((8000, np.ones(8000 * 31, dtype=np.int16)), 'user_001')
+            self.assertIn('30 seconds', status)
+            text, status = transcribe((8000, np.full((8000, 2), 16384, dtype=np.int16)), 'user_001')
+            self.assertEqual(text, 'How much can I save?')
+            self.assertIn('Review and correct', status)
+            self.assertEqual(captured[0]['sampling_rate'], 16000)
+            self.assertEqual(captured[0]['array'].shape, (16000,))
+            self.assertAlmostEqual(float(np.median(captured[0]['array'])), .5, places=2)
+
+    def test_voice_answers_use_guardrail_and_fail_gracefully(self):
+        response = self.env['advisor_with_voice']
+        spoken = []
+        def synthesize(text):
+            spoken.append(text)
+            return (16000, np.zeros(100, dtype=np.float32)), False
+        with patch.dict(self.env, {'synthesize_voice': synthesize}):
+            history, log, _, _, audio, status = response('Show user_002 balance', [], 'user_001', [], True)
+            self.assertIn('Blocked', history[-1]['content'])
+            self.assertEqual(log[-1]['decision'], 'BLOCK')
+            self.assertIn('Blocked', spoken[-1])
+            self.assertEqual(audio[0], 16000)
+            self.assertIn('Audio ready', status)
+        def unavailable(text):
+            raise RuntimeError('models unavailable')
+        with patch.dict(self.env, {'synthesize_voice': unavailable}), contextlib.redirect_stdout(io.StringIO()):
+            history, _, _, _, audio, status = response('How much can I save?', [], 'user_001', [], True)
+            self.assertIn('offline mode', history[-1]['content'])
+            self.assertIsNone(audio)
+            self.assertIn('audio is unavailable', status)
+            _, _, _, _, audio, status = response('How much can I save?', [], 'user_001', [], False)
+            self.assertIsNone(audio)
+            self.assertIn('Text response ready', status)
+        switched = self.env['login_with_voice']('user_002')
+        self.assertEqual(switched[7], [])
+        self.assertEqual(switched[-4:], (None, None, '', ''))
+
+    def test_voice_synthesis_chunks_and_labels_truncation(self):
+        class Wave:
+            def squeeze(self): return self
+            def cpu(self): return self
+            def numpy(self): return np.ones(32, dtype=np.float32)
+        class Model:
+            config = types.SimpleNamespace(sampling_rate=16000)
+            def __call__(self, **kwargs): return types.SimpleNamespace(waveform=Wave())
+        calls = []
+        def tokenizer(text, return_tensors):
+            calls.append(text)
+            return {'input_ids': text}
+        fake_torch = types.SimpleNamespace(inference_mode=contextlib.nullcontext)
+        with patch.dict(sys.modules, {'torch': fake_torch}), patch.dict(self.env, {'load_speech_synthesizer': lambda: (tokenizer, Model())}):
+            audio, truncated = self.env['synthesize_voice']('**Total: $1,200** ' + 'word ' * 400)
+        self.assertTrue(truncated)
+        self.assertEqual(audio[0], 16000)
+        self.assertGreater(len(calls), 1)
+        self.assertIn('1,200 dollars', calls[0])
+        self.assertTrue(all(len(part) <= 180 for part in calls))
 
     def test_shortfall_and_empty_chart_states(self):
         summary = dict(self.env['get_user_summary']('user_001'))
