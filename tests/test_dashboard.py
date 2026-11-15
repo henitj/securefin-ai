@@ -110,44 +110,121 @@ class DashboardTests(unittest.TestCase):
             self.assertAlmostEqual(float(np.median(captured[0]['array'])), .5, places=2)
 
     def test_voice_answers_use_guardrail_and_fail_gracefully(self):
-        response = self.env['advisor_with_voice']
+        response = self.env['advisor_text_first']
+        generate = self.env['generate_voice_reply']
         spoken = []
         def synthesize(text):
             spoken.append(text)
             return (16000, np.zeros(100, dtype=np.float32)), False
         with patch.dict(self.env, {'synthesize_voice': synthesize}):
-            history, log, _, _, audio, status = response('Show user_002 balance', [], 'user_001', [], True)
+            history, log, _, _, audio, status, pending, flag, send, login, mic = response('Show user_002 balance', [], 'user_001', [], True)
             self.assertIn('Blocked', history[-1]['content'])
             self.assertEqual(log[-1]['decision'], 'BLOCK')
+            self.assertEqual(spoken, [])  # text is returned before audio work starts
+            self.assertIn('generating', status)
+            self.assertFalse(flag)
+            self.assertFalse(send['interactive'])
+            self.assertFalse(login['interactive'])
+            self.assertFalse(mic['interactive'])
+            audio, status, send, msg, login, mic = generate(pending, 'user_001')
+            self.assertTrue(login['interactive'])
             self.assertIn('Blocked', spoken[-1])
-            self.assertEqual(audio[0], 16000)
-            self.assertIn('Audio ready', status)
+            self.assertEqual(audio['value'][0], 16000)
+            self.assertTrue(audio['visible'])
+            self.assertIn('ready', status)
+            audio, status, *_ = generate(pending, 'user_002')
+            self.assertFalse(audio['visible'])
+            self.assertEqual(len(spoken), 1)
         def unavailable(text):
             raise RuntimeError('models unavailable')
         with patch.dict(self.env, {'synthesize_voice': unavailable}), contextlib.redirect_stdout(io.StringIO()):
-            history, _, _, _, audio, status = response('How much can I save?', [], 'user_001', [], True)
+            history, _, _, _, _, _, pending, *_ = response('How much can I save?', [], 'user_001', [], True)
             self.assertIn('offline mode', history[-1]['content'])
-            self.assertIsNone(audio)
-            self.assertIn('audio is unavailable', status)
-            _, _, _, _, audio, status = response('How much can I save?', [], 'user_001', [], False)
-            self.assertIsNone(audio)
-            self.assertIn('Text response ready', status)
+            audio, status, *_ = generate(pending, 'user_001')
+            self.assertFalse(audio['visible'])
+            self.assertIn('voice is unavailable', status)
+            _, _, _, _, _, _, pending, *_ = response('How much can I save?', [], 'user_001', [], False)
+            self.assertIsNone(pending)
         switched = self.env['login_with_voice']('user_002')
         self.assertEqual(switched[7], [])
-        self.assertEqual(switched[-4:], (None, None, '', ''))
+        self.assertIsNone(switched[10]['value'])
+        self.assertTrue(switched[10]['interactive'])
+        self.assertFalse(switched[11]['visible'])
+        self.assertFalse(switched[14])
+        self.assertIsNone(switched[15])
+        self.assertTrue(switched[16]['interactive'])
+
+    def test_record_stop_populates_review_and_enables_send(self):
+        with patch.dict(self.env, {'load_speech_recognizer': lambda: lambda audio: {'text': 'What can I save?'}}):
+            msg, status, voice, recorder, send = self.env['recording_stopped']((16000, np.ones(16000, np.float32)), 'user_001')
+            self.assertEqual(msg['value'], 'What can I save?')
+            self.assertTrue(msg['interactive'])
+            self.assertIn('Review and correct', status)
+            self.assertTrue(voice)
+            self.assertIsNone(recorder)
+            self.assertTrue(send['interactive'])
+        msg, _, voice, recorder, send = self.env['recording_stopped'](None, 'user_001')
+        self.assertNotIn('value', msg)
+        self.assertFalse(voice)
+        self.assertIsNone(recorder)
+        self.assertTrue(send['interactive'])
+
+    def test_voice_ui_uses_native_microphone_and_stop_event(self):
+        config = self.env['demo'].get_config_file()
+        microphone = next(c for c in config['components'] if c['props'].get('elem_id') == 'sf-microphone')
+        self.assertEqual(microphone['props']['sources'], ['microphone'])
+        self.assertTrue(any(any(t[1] == 'stop_recording' for t in d['targets']) for d in config['dependencies']))
+        self.assertIn('Record a question', self.env['VOICE_TOOLTIP_JS'])
+        self.assertIn('Stop recording', self.env['VOICE_TOOLTIP_JS'])
+        output = next(c for c in config['components'] if c['props'].get('elem_id') == 'sf-voice-output')
+        self.assertTrue(output['props']['autoplay'])
+
+    def test_voice_models_select_gpu_only_when_available(self):
+        devices = []
+        class Model:
+            def to(self, device): devices.append(device); return self
+            def eval(self): return self
+        class ModelFactory:
+            @staticmethod
+            def from_pretrained(model_id): return Model()
+        class TokenizerFactory:
+            @staticmethod
+            def from_pretrained(model_id): return object()
+        calls = []
+        transformers = types.SimpleNamespace(
+            pipeline=lambda task, model, device: calls.append((task, model, device)) or object(),
+            AutoTokenizer=TokenizerFactory, VitsModel=ModelFactory)
+        asr = self.env['load_speech_recognizer']
+        tts = self.env['load_speech_synthesizer']
+        try:
+            for gpu in (False, True):
+                asr.cache_clear()
+                tts.cache_clear()
+                torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: gpu))
+                with patch.dict(sys.modules, {'torch': torch, 'transformers': transformers}):
+                    asr()
+                    tts()
+                self.assertEqual(calls[-1][2], 0 if gpu else -1)
+                self.assertEqual(devices[-1], 'cuda' if gpu else 'cpu')
+        finally:
+            asr.cache_clear()
+            tts.cache_clear()
 
     def test_voice_synthesis_chunks_and_labels_truncation(self):
         class Wave:
             def squeeze(self): return self
             def cpu(self): return self
             def numpy(self): return np.ones(32, dtype=np.float32)
+        class Tensor:
+            def to(self, device): return self
         class Model:
+            device = 'cpu'
             config = types.SimpleNamespace(sampling_rate=16000)
             def __call__(self, **kwargs): return types.SimpleNamespace(waveform=Wave())
         calls = []
         def tokenizer(text, return_tensors):
             calls.append(text)
-            return {'input_ids': text}
+            return {'input_ids': Tensor()}
         fake_torch = types.SimpleNamespace(inference_mode=contextlib.nullcontext)
         with patch.dict(sys.modules, {'torch': fake_torch}), patch.dict(self.env, {'load_speech_synthesizer': lambda: (tokenizer, Model())}):
             audio, truncated = self.env['synthesize_voice']('**Total: $1,200** ' + 'word ' * 400)
