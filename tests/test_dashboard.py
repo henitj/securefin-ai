@@ -58,6 +58,34 @@ class DashboardTests(unittest.TestCase):
         _, _, rendered = self.env['request_fn']('<img src=x onerror=alert(1)>', 'user_001', [])
         self.assertNotIn('<img src=x onerror=alert(1)>', rendered)
 
+    def test_navigation_is_identifiable_and_responsive(self):
+        config = self.env['demo'].get_config_file()
+        components = config['components']
+        nav = next(c for c in components if c['type'] == 'tabs')
+        self.assertEqual(nav['props']['elem_id'], 'sf-navigation')
+        self.assertEqual(nav['props']['overflow_behavior'], 'wrap')
+        tabs = [c for c in components if c['type'] == 'tabitem']
+        self.assertEqual(len(tabs), 3)
+        self.assertTrue(all(c['props']['interactive'] for c in tabs))
+        css = self.env['APP_CSS']
+        self.assertIn('button[role="tab"][aria-selected="true"]', css)
+        self.assertIn('button[role="tab"]:hover', css)
+        self.assertIn('button[role="tab"]:focus-visible', css)
+        self.assertIn('@media(max-width:540px)', css)
+
+    def test_composers_have_consistent_responsive_alignment(self):
+        components = self.env['demo'].get_config_file()['components']
+        rows = [c for c in components if c['type'] == 'row' and 'sf-compose-row' in c['props']['elem_classes']]
+        fields = [c for c in components if c['type'] == 'textbox' and 'sf-compose-field' in c['props']['elem_classes']]
+        buttons = [c for c in components if c['type'] == 'button' and 'sf-compose-button' in c['props']['elem_classes']]
+        self.assertEqual((len(rows), len(fields), len(buttons)), (2, 2, 2))
+        self.assertEqual({c['props']['label'] for c in fields}, {'Your question', 'Data request'})
+        self.assertTrue(all(not c['props']['container'] for c in fields))
+        css = self.env['APP_CSS']
+        self.assertIn('align-items:flex-end', css)
+        self.assertIn('@media(max-width:600px)', css)
+        self.assertIn('flex-direction:column', css)
+
     def test_shortfall_and_empty_chart_states(self):
         summary = dict(self.env['get_user_summary']('user_001'))
         summary['monthly_spend'] = summary['monthly_income'] + 100
